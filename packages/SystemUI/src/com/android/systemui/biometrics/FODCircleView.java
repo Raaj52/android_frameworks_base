@@ -16,13 +16,6 @@
 
 package com.android.systemui.biometrics;
 
-import static com.android.internal.widget.LockPatternUtils.StrongAuthTracker.STRONG_AUTH_REQUIRED_AFTER_DPM_LOCK_NOW;
-import static com.android.internal.widget.LockPatternUtils.StrongAuthTracker.STRONG_AUTH_REQUIRED_AFTER_LOCKOUT;
-import static com.android.internal.widget.LockPatternUtils.StrongAuthTracker.STRONG_AUTH_REQUIRED_AFTER_TIMEOUT;
-import static com.android.internal.widget.LockPatternUtils.StrongAuthTracker.STRONG_AUTH_REQUIRED_AFTER_USER_LOCKDOWN;
-
-import android.app.ActivityManager;
-
 import android.content.ContentResolver;
 import android.content.Context;
 import android.content.res.Configuration;
@@ -34,12 +27,10 @@ import android.graphics.drawable.AnimationDrawable;
 import android.graphics.PixelFormat;
 import android.graphics.Point;
 import android.hardware.biometrics.BiometricSourceType;
-import android.hardware.fingerprint.FingerprintManager;
 import android.os.Handler;
 import android.os.UserHandle;
 import android.os.Looper;
 import android.os.RemoteException;
-import android.os.UserHandle;
 import android.provider.Settings;
 import android.view.Display;
 import android.view.Gravity;
@@ -50,7 +41,6 @@ import android.view.View;
 import android.view.WindowManager;
 import android.widget.ImageView;
 
-import com.android.keyguard.KeyguardSecurityModel.SecurityMode;
 import com.android.keyguard.KeyguardUpdateMonitor;
 import com.android.keyguard.KeyguardUpdateMonitorCallback;
 import com.android.systemui.R;
@@ -61,8 +51,6 @@ import vendor.lineage.biometrics.fingerprint.inscreen.V1_0.IFingerprintInscreenC
 import java.util.NoSuchElementException;
 import java.util.Timer;
 import java.util.TimerTask;
-
-import com.android.internal.util.custom.fod.FodScreenOffHandler;
 
 public class FODCircleView extends ImageView {
     private final int mPositionX;
@@ -85,13 +73,10 @@ public class FODCircleView extends ImageView {
     private boolean mIsKeyguard;
     private boolean mIsShowing;
     private boolean mIsCircleShowing;
-    private boolean mCanUnlockWithFp;
 
     private Handler mHandler;
 
     private Timer mBurnInProtectionTimer;
-
-    private FodScreenOffHandler mFodScreenOffHandler;
 
     private FODAnimation mFODAnimation;
     private boolean mIsRecognizingAnimEnabled;
@@ -145,14 +130,12 @@ public class FODCircleView extends ImageView {
         }
     };
 
-    private FingerprintManager mFingerprintManager;
     private KeyguardUpdateMonitor mUpdateMonitor;
 
     private KeyguardUpdateMonitorCallback mMonitorCallback = new KeyguardUpdateMonitorCallback() {
         @Override
         public void onDreamingStateChanged(boolean dreaming) {
             mIsDreaming = dreaming;
-            dispatchFodDreamingStateChanged();
             updateAlpha();
 
             if (dreaming) {
@@ -176,111 +159,21 @@ public class FODCircleView extends ImageView {
         public void onKeyguardBouncerChanged(boolean isBouncer) {
             mIsBouncer = isBouncer;
 
-            if (mIsKeyguard && mUpdateMonitor.isFingerprintDetectionRunning()) {
-                final SecurityMode sec = mUpdateMonitor.getSecurityMode();
-                final boolean maybeShow = sec == SecurityMode.Pattern ||
-                        sec == SecurityMode.PIN;
-                if (maybeShow || !mIsBouncer) {
-                    show();
-                } else {
-                    hide();
-                }
-            } else {
+            if (isBouncer) {
                 hide();
+            } else if (mUpdateMonitor.isFingerprintDetectionRunning()) {
+                show();
             }
         }
 
         @Override
         public void onScreenTurnedOff() {
-            hide();
-            dispatchFodScreenStateChanged(false);
-        }
-
-        @Override
-        public void onScreenTurnedOn() {
-            if (mUpdateMonitor.isFingerprintDetectionRunning()) {
-                show();
-            }
-            dispatchFodScreenStateChanged(true);
-        }
-
-        @Override
-        public void onBiometricRunningStateChanged(boolean running,
-            BiometricSourceType biometricSourceType) {
-            dispatchFodFingerprintRunningStateChanged(running);
-        }
-
-        @Override
-        public void onBiometricHelp(int msgId, String helpString,
-                BiometricSourceType biometricSourceType) {
-            if (msgId == -1){ // Auth error
-                hideCircle();
-                mHandler.post(() -> mFODAnimation.hideFODanimation());
-            }
-        }
-
-        @Override
-        public void onStrongAuthStateChanged(int userId) {
-            mCanUnlockWithFp = canUnlockWithFp(mUpdateMonitor);
-            if (mIsShowing && !mCanUnlockWithFp){
-                hide();
-            }
+            hideCircle();
         }
     };
 
-    private void dispatchFodScreenStateChanged(boolean interactive){
-        dispatchFodFingerprintHasEnrolledFinger();
-        if (mFodScreenOffHandler != null){
-            mFodScreenOffHandler.onScreenStateChanged(interactive);
-        }
-    }
-
-    private void dispatchFodFingerprintRunningStateChanged(boolean running){
-        if (mFodScreenOffHandler != null){
-            mFodScreenOffHandler.onFingerprintRunningStateChanged(running);
-        }
-    }
-
-    private void dispatchFodDreamingStateChanged(){
-        if (mFodScreenOffHandler != null){
-            mFodScreenOffHandler.onDreamingStateChanged(mIsDreaming);
-        }
-    }
-
-    private void dispatchFodFingerprintHasEnrolledFinger(){
-        if (mFodScreenOffHandler != null &&
-                mFingerprintManager != null &&
-                mFingerprintManager.isHardwareDetected()) {
-            boolean enrolled = mFingerprintManager.hasEnrolledFingerprints(UserHandle.myUserId());
-            mFodScreenOffHandler.hasEnrolledFingerprints(enrolled);
-        }
-    }
-
-    public static boolean canUnlockWithFp(KeyguardUpdateMonitor updateMonitor) {
-        int currentUser = KeyguardUpdateMonitor.getCurrentUser();
-        boolean biometrics = updateMonitor.isUnlockingWithBiometricsPossible(currentUser);
-        KeyguardUpdateMonitor.StrongAuthTracker strongAuthTracker =
-                updateMonitor.getStrongAuthTracker();
-        int strongAuth = strongAuthTracker.getStrongAuthForUser(currentUser);
-        if (biometrics && !strongAuthTracker.hasUserAuthenticatedSinceBoot()) {
-            return false;
-        } else if (biometrics && (strongAuth & STRONG_AUTH_REQUIRED_AFTER_TIMEOUT) != 0) {
-            return false;
-        } else if (biometrics && (strongAuth & STRONG_AUTH_REQUIRED_AFTER_DPM_LOCK_NOW) != 0) {
-            return false;
-        } else if (biometrics && (strongAuth & STRONG_AUTH_REQUIRED_AFTER_LOCKOUT) != 0) {
-            return false;
-        } else if (biometrics && (strongAuth & STRONG_AUTH_REQUIRED_AFTER_USER_LOCKDOWN) != 0) {
-            return false;
-        }
-        return true;
-    }
-
-    public FODCircleView(Context context, FodScreenOffHandler fodScreenOffHandler) {
+    public FODCircleView(Context context) {
         super(context);
-
-        mFingerprintManager = (FingerprintManager) context.getSystemService(Context.FINGERPRINT_SERVICE);
-        mFodScreenOffHandler = fodScreenOffHandler;
 
         IFingerprintInscreen daemon = getFingerprintInScreenDaemon();
         if (daemon == null) {
@@ -329,9 +222,6 @@ public class FODCircleView extends ImageView {
 
         mUpdateMonitor = KeyguardUpdateMonitor.getInstance(context);
         mUpdateMonitor.registerCallback(mMonitorCallback);
-
-        mCanUnlockWithFp = canUnlockWithFp(mUpdateMonitor);
-
         mFODAnimation = new FODAnimation(context, mPositionX, mPositionY);
     }
 
@@ -456,24 +346,12 @@ public class FODCircleView extends ImageView {
     }
 
     public void show() {
-        if (!mUpdateMonitor.isScreenOn()) {
-            // Keyguard is shown just after screen turning off
-            return;
-        }
-
         if (mIsBouncer) {
             // Ignore show calls when Keyguard pin screen is being shown
             return;
         }
 
-        if (!mCanUnlockWithFp){
-            // Ignore when unlocking with fp is not possible
-            return;
-        }
-
         mIsShowing = true;
-
-        updatePosition();
 
         dispatchShow();
         setVisibility(View.VISIBLE);
